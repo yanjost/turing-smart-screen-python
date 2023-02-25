@@ -9,6 +9,12 @@ import enum
 
 import logging
 
+SCREEN_HEIGHT = 800
+
+INPUT_MESSAGE_SIZE = 1024
+
+MESSAGE_MAX_SIZE = 250
+
 logger = logging.getLogger()
 logging.basicConfig()
 logger.setLevel(logging.DEBUG)
@@ -40,7 +46,7 @@ def ReadReply(expect=None, fail=True):
     logger.debug('ReadReply')
     # response = lcd_serial.read_until(b'\0').decode('utf-8').rstrip('\x00')
 
-    response = lcd_serial.read(1024).decode('utf-8').rstrip('\x00')
+    response = lcd_serial.read(INPUT_MESSAGE_SIZE).decode('utf-8').rstrip('\x00')
     logger.debug('ReadReply: response %s', response)
     if expect:
         logger.debug('Expect: %s type %s length %d', expect, type(expect), len(expect))
@@ -63,7 +69,7 @@ def SendMSG(MSG: Union[str, enum.Enum], PadValue='00'):
     if type(MSG) is str: MSG = bytearray.fromhex(MSG)
 
     MsgSize = len(MSG)
-    if not (MsgSize / 250).is_integer(): MSG += bytes.fromhex(PadValue) * ((250 * ceil(MsgSize / 250)) - MsgSize)
+    if not (MsgSize / MESSAGE_MAX_SIZE).is_integer(): MSG += bytes.fromhex(PadValue) * ((MESSAGE_MAX_SIZE * ceil(MsgSize / MESSAGE_MAX_SIZE)) - MsgSize)
 
     lcd_serial.flushInput()
     lcd_serial.write(MSG)
@@ -93,7 +99,7 @@ def GenerateUpdateImage(Path, x, y):
 
     MSG = ''
     for h in range(height):
-        MSG += f'{((x + h) * 800) + y:06x}' + f'{width:04x}'
+        MSG += f'{((x + h) * SCREEN_HEIGHT) + y:06x}' + f'{width:04x}'
         for w in range(width): MSG += f'{image[h][w][0]:02x}' + f'{image[h][w][1]:02x}' + f'{image[h][w][2]:02x}'
 
     UPD_Size = f'{int((len(MSG) / 2) + 2):04x}'  # The +2 is for the "ef69" that will be added later
