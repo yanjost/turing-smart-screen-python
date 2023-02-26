@@ -1,13 +1,25 @@
+import binascii
 import time
 from math import ceil
 from typing import Union
+import sys
 
 import serial
 import cv2
 import atexit
 import enum
+import selectolax.lexbor as lex
+from loguru import logger
 
-import logging
+logger.add(sys.stdout, colorize=True, format="<green>{time}</green> <level>{message}</level>")
+
+
+from html2image import Html2Image
+hti = Html2Image(size=(800, 480))
+
+
+
+#import logging
 
 SCREEN_HEIGHT = 800
 
@@ -15,9 +27,9 @@ INPUT_MESSAGE_SIZE = 1024
 
 MESSAGE_MAX_SIZE = 250
 
-logger = logging.getLogger()
-logging.basicConfig()
-logger.setLevel(logging.DEBUG)
+#logger = logging.getLogger()
+#logging.basicConfig()
+#logger.setLevel(logging.DEBUG)
 
 FAIL_ON_EXPECT = True
 
@@ -46,10 +58,15 @@ def ReadReply(expect=None, fail=True):
     logger.debug('ReadReply')
     # response = lcd_serial.read_until(b'\0').decode('utf-8').rstrip('\x00')
 
-    response = lcd_serial.read(INPUT_MESSAGE_SIZE).decode('utf-8').rstrip('\x00')
-    logger.debug('ReadReply: response %s', response)
+    response = None
+
+    for i in range(5):
+        response = lcd_serial.read(INPUT_MESSAGE_SIZE).decode('utf-8').rstrip('\x00')
+        if response: break
+
+    logger.debug('ReadReply: response {}', response if len(response) else '-- EMPTY --')
     if expect:
-        logger.debug('Expect: %s type %s length %d', expect, type(expect), len(expect))
+        logger.debug('Expect: {} type {} length {}', expect, type(expect), len(expect))
     # print(response)
     if expect:
         if str(response) != str(expect):
@@ -61,30 +78,35 @@ def ReadReply(expect=None, fail=True):
 
 def SendMSG(MSG: Union[str, enum.Enum], PadValue='00'):
     if isinstance(MSG, enum.Enum):
-        logger.debug('SendMSG: %s', MSG.name)
+        logger.debug('SendMSG: {}', MSG.name)
         MSG = MSG.value
-    else:
-        logger.debug('SendMSG: %s', MSG[:64])
 
     if type(MSG) is str: MSG = bytearray.fromhex(MSG)
 
     MsgSize = len(MSG)
-    if not (MsgSize / MESSAGE_MAX_SIZE).is_integer(): MSG += bytes.fromhex(PadValue) * ((MESSAGE_MAX_SIZE * ceil(MsgSize / MESSAGE_MAX_SIZE)) - MsgSize)
+    logger.debug('Message Size: {}', MsgSize)
+    if not (MsgSize / MESSAGE_MAX_SIZE).is_integer():
+        logger.debug('Padding Message')
+        MSG += bytes.fromhex(PadValue) * ((MESSAGE_MAX_SIZE * ceil(MsgSize / MESSAGE_MAX_SIZE)) - MsgSize)
 
     lcd_serial.flushInput()
+    logger.debug('SendMSG: first 64 bytes {} ', str(binascii.hexlify(bytes(MSG[:64]))))
     lcd_serial.write(MSG)
-    # return
+    return
 
     # I didn't notice any speed difference in splitting the messages, but their app had random splits in their messages ...
-    MsgLimit = 111000
-    MSG = [MSG[i:i + MsgLimit] for i in range(0, len(MSG), MsgLimit)]
-    for part in MSG: lcd_serial.write(part)
+    # MsgLimit = 111000
+    # MSG = [MSG[i:i + MsgLimit] for i in range(0, len(MSG), MsgLimit)]
+    # for part in MSG:
+    #     time.sleep(0.5)
+    #     logger.debug('SendMSG: first 64 bytes {} ', str(binascii.hexlify(bytes(part[:64]))))
+    #     lcd_serial.write(part)
 
 
 def GenerateFullImage(Path):
-    logger.debug('GenerateFullImage: %s', Path)
+    logger.debug('GenerateFullImage: {}', Path)
     image = cv2.imread(Path, cv2.IMREAD_UNCHANGED)
-    logger.debug('Image shape: %s', image.shape)
+    logger.debug('Image shape: {}', image.shape)
     if image.shape[2] < 4: image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
 
     image = bytearray(image)
@@ -110,7 +132,7 @@ def GenerateUpdateImage(Path, x, y):
     return MSG, UPD_Size
 
 
-lcd_serial = serial.Serial("/dev/tty.usbmodem200804111", 115200, timeout=2, rtscts=1)
+lcd_serial = serial.Serial("/dev/ttyACM0", 115200, timeout=1, rtscts=1)
 atexit.register(OnExit)
 
 SendMSG(CMD.Get_Device)  # Skippable
@@ -119,27 +141,49 @@ SendMSG(CMD.Stop_Video)  # Skippable if there is no video playing now
 ReadReply()
 SendMSG(Unknown.Media_Stop)  # Skippable, might be for album playback
 ReadReply('media_stop')  # The reply should be "media_stop"
-SendMSG(Unknown.PreImgCMD, '2c')  # Skippable, the app pads it using "2c" instead of 00
+
+import datetime
+
+dt=datetime.datetime.now()
+
+imgs = []
+
+def generate_image_from_html(background_color=None):
+    global imgs
+    bgcolor=background_color or "red"
+    logger.debug('start screenshot')
+    imgs = hti.screenshot(
+        html_str=str(dt),
+        css_str=[f'body {{ background: {bgcolor} }}', 'body {font-size: 50px;}'],
+        save_as='image.png'
+    )
+    logger.debug('end screenshot')
+
 
 while True:
+    generate_image_from_html(background_color='red')
+    SendMSG(Unknown.PreImgCMD, '2c')  # Skippable, the app pads it using "2c" instead of 00
     SendMSG(CMD.Display_Full_IMAGE)
     # image = GenerateFullImage('./res/themes/LandscapeDeepSpace_theme_background.png')
-    image = GenerateFullImage('./800x480.png')
+    # image = GenerateFullImage('./800x480.png')
+    image = GenerateFullImage(imgs[0])
     SendMSG(image)
-    ReadReply()  # The reply should be "full_png_sucess"
-    SendMSG(Unknown.PostImgCMD)  # Skippable
+    ReadReply("full_png_sucess")  # The reply should be "full_png_sucess"
+    #SendMSG(Unknown.PostImgCMD)  # Skippable
+    #ReadReply()
 
     SendMSG(CMD.Query_Render_Status)
     ReadReply()  # The reply should containts (needReSend:0) to confirm all message are read/deliverd in order
 
     time.sleep(3)
-
+    #SendMSG(Unknown.PreImgCMD, '2c')  # Skippable, the app pads it using "2c" instead of 00
     SendMSG(CMD.Display_Full_IMAGE)
     # image = GenerateFullImage('./res/themes/LandscapeDeepSpace_theme_background.png')
     image = GenerateFullImage('./480.png')
     SendMSG(image)
-    ReadReply()  # The reply should be "full_png_sucess"
-    SendMSG(Unknown.PostImgCMD)  # Skippable
+    ReadReply("full_png_sucess", fail=False)  # The reply should be "full_png_sucess"
+    #SendMSG(Unknown.PostImgCMD)  # Skippable
+    #ReadReply()
 
     SendMSG(CMD.Query_Render_Status)
     ReadReply()  # The reply should containts (needReSend:0) to confirm all message are read/deliverd in order
